@@ -1,0 +1,6 @@
+customtkinter
+pyautogui
+keyboard
+mss
+Pillow
+google-genai
