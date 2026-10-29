@@ -1,6 +1,7 @@
 customtkinter
 pyautogui
-keyboard
+pynput
 mss
 Pillow
 google-genai
+pyperclip

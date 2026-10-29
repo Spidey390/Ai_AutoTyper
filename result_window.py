@@ -1,13 +1,20 @@
 """
 result_window.py — Floating solution overlay using tkinter.
 Appears on top of all windows WITHOUT stealing focus from the active app.
+macOS-compatible: uses tkinter screen geometry instead of ctypes/windll.
 """
 
 import threading
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import scrolledtext
 import re
-import pyperclip
+import sys
+
+try:
+    import pyperclip
+    _HAS_PYPERCLIP = True
+except ImportError:
+    _HAS_PYPERCLIP = False
 
 
 # ── Color palette ──────────────────────────────────────────────
@@ -22,18 +29,18 @@ SUCCESS      = "#10b981"
 ERROR_COL    = "#ef4444"
 BORDER       = "#2a2a2a"
 
-FONT_MONO    = ("Consolas", 11)
-FONT_BODY    = ("Segoe UI", 11)
-FONT_TITLE   = ("Segoe UI", 13, "bold")
-FONT_SMALL   = ("Segoe UI", 9)
+FONT_MONO    = ("Menlo", 11) if sys.platform == "darwin" else ("Consolas", 11)
+FONT_BODY    = ("Helvetica Neue", 11) if sys.platform == "darwin" else ("Segoe UI", 11)
+FONT_TITLE   = ("Helvetica Neue", 13, "bold") if sys.platform == "darwin" else ("Segoe UI", 13, "bold")
+FONT_SMALL   = ("Helvetica Neue", 9) if sys.platform == "darwin" else ("Segoe UI", 9)
 
 
 class ResultWindow:
     """Floating overlay window that shows Gemini solution."""
 
     def __init__(self, width: int = 700, height: int = 550, position: str = "right"):
-        self.width  = width
-        self.height = height
+        self.width    = width
+        self.height   = height
         self.position = position
         self.root: tk.Tk | None = None
         self._current_code = ""
@@ -69,12 +76,11 @@ class ResultWindow:
 
     # ── Internal ───────────────────────────────────────────────
 
-    def _calc_position(self):
-        """Calculate overlay position (right or left side of screen)."""
-        import ctypes
-        user32 = ctypes.windll.user32
-        screen_w = user32.GetSystemMetrics(0)
-        screen_h = user32.GetSystemMetrics(1)
+    def _calc_position(self, root: tk.Tk):
+        """Calculate overlay position using tkinter (cross-platform)."""
+        root.update_idletasks()
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
 
         margin = 20
         y = (screen_h - self.height) // 2
@@ -88,7 +94,6 @@ class ResultWindow:
 
     def _launch_loading(self):
         """Create the root window and show loading state."""
-        # Destroy previous window if exists
         if self.root:
             try:
                 self.root.destroy()
@@ -103,22 +108,20 @@ class ResultWindow:
         root.configure(bg=BG_DARK)
         root.resizable(True, True)
 
-        # Position window
-        x, y = self._calc_position()
+        # Position window (must be done after tk.Tk() so screen info is available)
+        x, y = self._calc_position(root)
         root.geometry(f"{self.width}x{self.height}+{x}+{y}")
 
-        # Stay on top WITHOUT stealing focus
+        # Stay on top — works on macOS, Windows, Linux
         root.attributes("-topmost", True)
-        root.attributes("-alpha", 0.97)
-        root.overrideredirect(False)
 
-        # Prevent stealing focus on Windows
-        root.wm_attributes("-topmost", True)
-        root.after(10, lambda: root.wm_attributes("-topmost", True))
+        # Slight transparency (macOS supports -alpha natively)
+        try:
+            root.attributes("-alpha", 0.97)
+        except tk.TclError:
+            pass  # Some Linux WMs don't support alpha
 
         self._build_ui(root)
-
-        # Show loading
         self._set_loading_state(True)
 
         root.mainloop()
@@ -134,12 +137,11 @@ class ResultWindow:
         title_bar.grid(row=0, column=0, sticky="ew")
         title_bar.columnconfigure(1, weight=1)
 
-        # Gemini logo dot
         canvas = tk.Canvas(title_bar, width=28, height=28, bg=BG_CARD,
                            highlightthickness=0)
         canvas.create_oval(2, 2, 26, 26, fill=ACCENT, outline="")
         canvas.create_text(14, 14, text="G", fill="white",
-                           font=("Segoe UI", 12, "bold"))
+                           font=(FONT_TITLE[0], 12, "bold"))
         canvas.grid(row=0, column=0, padx=(0, 10))
 
         self.title_label = tk.Label(
@@ -156,9 +158,7 @@ class ResultWindow:
         )
         close_btn.grid(row=0, column=2)
 
-        # Divider
-        tk.Frame(root, bg=BORDER, height=1).grid(row=0, column=0,
-                                                  sticky="ew", pady=(0, 0))
+        tk.Frame(root, bg=BORDER, height=1).grid(row=0, column=0, sticky="ew")
 
         # ── Content area ──────────────────────────────────────
         content = tk.Frame(root, bg=BG_DARK)
@@ -166,7 +166,7 @@ class ResultWindow:
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
 
-        # Loading label (shown while processing)
+        # Loading frame
         self.loading_frame = tk.Frame(content, bg=BG_DARK)
         self.loading_frame.grid(row=0, column=0, sticky="nsew")
         self.loading_frame.columnconfigure(0, weight=1)
@@ -176,7 +176,7 @@ class ResultWindow:
         loading_inner.place(relx=0.5, rely=0.5, anchor="center")
 
         self.spinner_label = tk.Label(
-            loading_inner, text="⟳", font=("Segoe UI", 36),
+            loading_inner, text="⟳", font=(FONT_BODY[0], 36),
             bg=BG_DARK, fg=ACCENT
         )
         self.spinner_label.pack()
@@ -191,13 +191,12 @@ class ResultWindow:
             font=FONT_SMALL, bg=BG_DARK, fg=TEXT_MUTED
         ).pack(pady=(4, 0))
 
-        # Scroll area (shown after result)
+        # Result frame
         self.result_frame = tk.Frame(content, bg=BG_DARK)
         self.result_frame.grid(row=0, column=0, sticky="nsew")
         self.result_frame.columnconfigure(0, weight=1)
         self.result_frame.rowconfigure(0, weight=1)
 
-        # Scrolled text widget
         self.text_area = scrolledtext.ScrolledText(
             self.result_frame,
             font=FONT_BODY,
@@ -210,12 +209,10 @@ class ResultWindow:
         )
         self.text_area.grid(row=0, column=0, sticky="nsew")
 
-        # Configure text tags for styling
         self.text_area.tag_configure("heading",
-            font=("Segoe UI", 13, "bold"), foreground=ACCENT2,
-            spacing3=6)
+            font=(FONT_BODY[0], 13, "bold"), foreground=ACCENT2, spacing3=6)
         self.text_area.tag_configure("bold",
-            font=("Segoe UI", 11, "bold"), foreground=TEXT_PRIMARY)
+            font=(FONT_BODY[0], 11, "bold"), foreground=TEXT_PRIMARY)
         self.text_area.tag_configure("code_block",
             font=FONT_MONO, background=BG_CODE, foreground="#e2e8f0",
             lmargin1=16, lmargin2=16, rmargin=16, spacing1=8, spacing3=8)
@@ -242,7 +239,7 @@ class ResultWindow:
         self.copy_btn.grid(row=0, column=0, padx=(0, 8))
 
         self.status_label = tk.Label(
-            bottom, text="Press Ctrl+Shift+G to capture a new screenshot",
+            bottom, text="Press configured hotkey to capture a new screenshot",
             font=FONT_SMALL, bg=BG_CARD, fg=TEXT_MUTED, anchor="w"
         )
         self.status_label.grid(row=0, column=1, sticky="w")
@@ -255,23 +252,17 @@ class ResultWindow:
         )
         close_btn2.grid(row=0, column=2)
 
-        # Start with loading visible
         self._set_loading_state(True)
-
-        # Animate spinner
         self._animate_spinner(0)
 
     def _update_loading_text(self, msg: str):
-        """Update the status text shown on the loading screen."""
         try:
-            # Find and update the loading description label if it exists
             if hasattr(self, "_loading_status_label"):
                 self._loading_status_label.config(text=msg)
         except Exception:
             pass
 
     def _animate_spinner(self, step: int):
-        """Simple rotation animation for the spinner."""
         frames = ["⟳", "◐", "◓", "◑", "◒"]
         if self.root and hasattr(self, "spinner_label"):
             try:
@@ -281,14 +272,12 @@ class ResultWindow:
                 pass
 
     def _set_loading_state(self, loading: bool):
-        """Toggle between loading and result states."""
         if loading:
             self.loading_frame.lift()
         else:
             self.result_frame.lift()
 
     def _render_result(self, markdown_text: str):
-        """Parse and render the markdown response into the text widget."""
         self.title_label.config(text="✨ Gemini Solver — Solution Ready")
         self._set_loading_state(False)
 
@@ -296,23 +285,19 @@ class ResultWindow:
         ta.config(state="normal")
         ta.delete("1.0", tk.END)
 
-        # Extract code for copy button
         code_blocks = re.findall(r"```(?:\w+)?\n(.*?)```", markdown_text, re.DOTALL)
         self._current_code = "\n\n".join(code_blocks) if code_blocks else markdown_text
 
-        # Parse and render markdown
         lines = markdown_text.split("\n")
         in_code_block = False
         code_lang = ""
 
         for line in lines:
-            # Code block start/end
             if line.startswith("```"):
                 if not in_code_block:
                     in_code_block = True
                     code_lang = line[3:].strip()
-                    ta.insert(tk.END,
-                              f"  ─── {code_lang or 'code'} ───\n", "muted")
+                    ta.insert(tk.END, f"  ─── {code_lang or 'code'} ───\n", "muted")
                 else:
                     in_code_block = False
                     ta.insert(tk.END, "\n")
@@ -322,21 +307,17 @@ class ResultWindow:
                 ta.insert(tk.END, line + "\n", "code_block")
                 continue
 
-            # Headings
             if line.startswith("### "):
                 ta.insert(tk.END, line[4:] + "\n", "heading")
             elif line.startswith("## "):
                 ta.insert(tk.END, line[3:] + "\n", "heading")
             elif line.startswith("# "):
                 ta.insert(tk.END, line[2:] + "\n", "heading")
-            # Bold **text**
             elif "**" in line:
                 self._insert_bold_line(ta, line)
-            # Bullets
             elif line.startswith("- ") or line.startswith("* "):
                 ta.insert(tk.END, "  • ", "bullet")
                 ta.insert(tk.END, line[2:] + "\n", "normal")
-            # Empty line
             elif line.strip() == "":
                 ta.insert(tk.END, "\n")
             else:
@@ -344,10 +325,9 @@ class ResultWindow:
 
         ta.config(state="disabled")
         ta.see("1.0")
-        self.status_label.config(text="✅ Solution ready — Press Ctrl+Shift+G for a new capture")
+        self.status_label.config(text="✅ Solution ready — Press hotkey for a new capture")
 
     def _insert_bold_line(self, ta, line: str):
-        """Handle inline bold **text** markers."""
         parts = re.split(r"(\*\*.*?\*\*)", line)
         for part in parts:
             if part.startswith("**") and part.endswith("**"):
@@ -357,7 +337,6 @@ class ResultWindow:
         ta.insert(tk.END, "\n")
 
     def _render_error(self, error_msg: str):
-        """Display an error message."""
         self.title_label.config(text="⚠ Gemini Solver — Error")
         self._set_loading_state(False)
 
@@ -365,8 +344,7 @@ class ResultWindow:
         ta.config(state="normal")
         ta.delete("1.0", tk.END)
         ta.tag_configure("error",
-            foreground=ERROR_COL, font=FONT_BODY,
-            spacing1=10)
+            foreground=ERROR_COL, font=FONT_BODY, spacing1=10)
         ta.insert(tk.END, "Something went wrong:\n\n", "heading")
         ta.insert(tk.END, str(error_msg), "error")
         ta.insert(tk.END, "\n\nPlease check:\n", "bold")
@@ -376,12 +354,42 @@ class ResultWindow:
         ta.config(state="disabled")
 
     def _copy_code(self):
-        """Copy code blocks to clipboard."""
-        if self._current_code:
-            pyperclip.copy(self._current_code)
+        if not self._current_code:
+            self.status_label.config(text="No code found to copy.")
+            return
+
+        copied = False
+        # Try pyperclip first
+        if _HAS_PYPERCLIP:
+            try:
+                pyperclip.copy(self._current_code)
+                copied = True
+            except Exception:
+                pass
+
+        # macOS fallback: pbcopy
+        if not copied and sys.platform == "darwin":
+            try:
+                import subprocess
+                proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+                proc.communicate(self._current_code.encode("utf-8"))
+                copied = True
+            except Exception:
+                pass
+
+        # tkinter clipboard fallback
+        if not copied and self.root:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(self._current_code)
+                copied = True
+            except Exception:
+                pass
+
+        if copied:
             self.status_label.config(text="✅ Code copied to clipboard!")
             if self.root:
                 self.root.after(3000, lambda: self.status_label.config(
-                    text="Press Ctrl+Shift+G to capture a new screenshot"))
+                    text="Press hotkey to capture a new screenshot"))
         else:
-            self.status_label.config(text="No code found to copy.")
+            self.status_label.config(text="⚠ Could not copy — try installing pyperclip.")
