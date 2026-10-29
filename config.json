@@ -1,5 +1,5 @@
 {
-    "api_key": "AIzaSyDEYMhWj6CMKhEQfa-GV3B1Y9Sw2KXh35I",
+    "api_key": "YOUR_GEMINI_API_KEY",
     "hotkey": "ctrl+shift+q",
     "model": "gemini-2.5-pro",
     "overlay_width": 700,

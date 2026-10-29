@@ -9,15 +9,26 @@ from pathlib import Path
 
 import customtkinter as ctk
 
+IS_MAC = sys.platform == "darwin"
 try:
     import pyautogui
-    import keyboard
+    if not IS_MAC:
+        import keyboard
 except ImportError:
     import subprocess
-    subprocess.run([sys.executable, "-m", "pip", "install", "pyautogui", "keyboard", "customtkinter", "mss", "pillow", "google-generativeai", "--break-system-packages"],
-                   capture_output=True)
+    pkgs = ["pyautogui", "customtkinter", "mss", "pillow", "google-generativeai"]
+    if not IS_MAC: pkgs.append("keyboard")
+    else: pkgs.append("pynput")
+    subprocess.run([sys.executable, "-m", "pip", "install"] + pkgs + ["--break-system-packages"], capture_output=True)
     import pyautogui
-    import keyboard
+    if not IS_MAC:
+        import keyboard
+
+if IS_MAC:
+    try:
+        import Quartz
+    except ImportError:
+        pass
 
 from PIL import Image
 from screenshot import capture_screen_base64
@@ -106,12 +117,28 @@ def type_code(text, target_wpm):
             break
         delay = human_delay(target_wpm)
 
-        if ch == '\n':
-            pyautogui.press('enter')
-        elif ch == '\t':
-            pyautogui.press('tab')
+        if IS_MAC and 'Quartz' in globals():
+            src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+            if ch == '\n':
+                for down in (True, False):
+                    e = Quartz.CGEventCreateKeyboardEvent(src, 36, down)
+                    Quartz.CGEventPost(Quartz.kCGSessionEventTap, e)
+            elif ch == '\t':
+                for down in (True, False):
+                    e = Quartz.CGEventCreateKeyboardEvent(src, 48, down)
+                    Quartz.CGEventPost(Quartz.kCGSessionEventTap, e)
+            else:
+                for down in (True, False):
+                    e = Quartz.CGEventCreateKeyboardEvent(src, 0, down)
+                    Quartz.CGEventKeyboardSetUnicodeString(e, len(ch), ch)
+                    Quartz.CGEventPost(Quartz.kCGSessionEventTap, e)
         else:
-            pyautogui.write(ch, interval=0)
+            if ch == '\n':
+                pyautogui.press('enter')
+            elif ch == '\t':
+                pyautogui.press('tab')
+            else:
+                pyautogui.write(ch, interval=0)
         time.sleep(delay)
     typing_active = False
     app.after(0, lambda: update_ui_state("✅ Done typing!", SUCCESS, False))
@@ -165,9 +192,18 @@ sidebar = ctk.CTkFrame(app, width=280, corner_radius=0, fg_color=PANEL_COLOR)
 sidebar.grid(row=0, column=0, sticky="nsew")
 sidebar.grid_rowconfigure(5, weight=1)
 
-ctk.CTkLabel(sidebar, text="⚡ AutoTyper Pro",
-             font=("Segoe UI", 20, "bold"), text_color="white").grid(
-    row=0, column=0, padx=20, pady=(30, 5), sticky="w")
+sidebar_header = ctk.CTkFrame(sidebar, fg_color="transparent")
+sidebar_header.grid(row=0, column=0, padx=20, pady=(30, 4), sticky="ew")
+sidebar_header.grid_columnconfigure(0, weight=1)
+
+ctk.CTkLabel(sidebar_header, text="⚡ AutoTyper Pro",
+             font=("Segoe UI", 20, "bold"), text_color="white").grid(row=0, column=0, sticky="w")
+
+settings_btn = ctk.CTkButton(sidebar_header, text="⚙️", width=30, height=30,
+                             fg_color="transparent", hover_color="#2D3748", text_color="white", font=("Segoe UI", 18),
+                             command=lambda: open_settings())
+settings_btn.grid(row=0, column=1, sticky="e")
+
 ctk.CTkLabel(sidebar, text="Gemini-Integrated Code Injection",
              font=("Segoe UI", 12), text_color=TEXT_MUTED).grid(
     row=1, column=0, padx=20, pady=(0, 30), sticky="w")
@@ -187,6 +223,47 @@ def create_slider(parent, label_text, var, from_, to):
     ctk.CTkSlider(parent, from_=from_, to=to, variable=var, command=on_change,
                   button_color=ACCENT, progress_color=ACCENT).pack(fill="x", pady=(5, 0))
     val_lbl.pack(anchor="e", pady=(0, 15))
+
+
+def save_config_file(data):
+    import json
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(data, f, indent=4)
+
+def open_settings():
+    settings_win = ctk.CTkToplevel(app)
+    settings_win.title("Settings")
+    settings_win.geometry("400x300")
+    settings_win.configure(fg_color=BG_COLOR)
+    settings_win.attributes("-topmost", True)
+    
+    current_config = load_config()
+    
+    ctk.CTkLabel(settings_win, text="Settings", font=("Segoe UI", 20, "bold"), text_color="white").pack(pady=(20, 10))
+    
+    ctk.CTkLabel(settings_win, text="Gemini API Key", font=("Segoe UI", 12), text_color=TEXT_MUTED).pack(anchor="w", padx=30)
+    api_entry = ctk.CTkEntry(settings_win, width=340, fg_color=PANEL_COLOR, border_color="#2D3748", show="*")
+    api_entry.pack(padx=30, pady=(5, 15))
+    api_entry.insert(0, current_config.get("api_key", ""))
+    
+    ctk.CTkLabel(settings_win, text="Model", font=("Segoe UI", 12), text_color=TEXT_MUTED).pack(anchor="w", padx=30)
+    model_var = ctk.StringVar(value=current_config.get("model", "gemini-2.5-pro"))
+    model_dropdown = ctk.CTkOptionMenu(settings_win, variable=model_var,
+                                       values=["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-pro-exp", "gemini-flash-lite-latest"],
+                                       width=340, fg_color=PANEL_COLOR, button_color=ACCENT, button_hover_color="#2563EB")
+    model_dropdown.pack(padx=30, pady=(5, 20))
+    
+    def save_settings():
+        current_config["api_key"] = api_entry.get().strip()
+        current_config["model"] = model_var.get()
+        save_config_file(current_config)
+        toast.show("Settings saved!", SUCCESS)
+        app.after(2000, toast.hide)
+        settings_win.destroy()
+        
+    save_btn = ctk.CTkButton(settings_win, text="Save Settings", command=save_settings,
+                             font=("Segoe UI", 14, "bold"), fg_color=ACCENT, hover_color="#2563EB", height=40)
+    save_btn.pack(padx=30, pady=10, fill="x")
 
 create_slider(settings_frame, "Typing Speed (WPM)", speed_var, 10, 500)
 
@@ -324,7 +401,9 @@ def run_gemini_pipeline():
             app.after(0, lambda: execute_gemini_result(cleaned_code))
 
         except Exception as e:
-            app.after(0, lambda: toast.show(f"❌ Error: {str(e)}", DANGER))
+            print("ERROR IN GEMINI PIPELINE:", str(e))
+            err_msg = str(e)
+            app.after(0, lambda err=err_msg: toast.show(f"❌ Error: {err}", DANGER))
             processing_gemini = False
 
     threading.Thread(target=task, daemon=True).start()
@@ -380,22 +459,63 @@ def run_gemini_error_pipeline():
             app.after(0, lambda: execute_gemini_result(cleaned_code))
 
         except Exception as e:
-            app.after(0, lambda: toast.show(f"❌ Error: {str(e)}", DANGER))
+            print("ERROR IN GEMINI PIPELINE:", str(e))
+            err_msg = str(e)
+            app.after(0, lambda err=err_msg: toast.show(f"❌ Error: {err}", DANGER))
             processing_gemini = False
 
     threading.Thread(target=task, daemon=True).start()
 
 
 # ── Global hotkeys ──
-keyboard.add_hotkey("ctrl+q", lambda: app.after(0, on_ctrl_q), suppress=True)
-
-# Register the Gemini hotkey based on config (defaults to your preference, e.g., ctrl+shift+q)
-config_data = load_config()
-gemini_hotkey = config_data.get("hotkey", "ctrl+shift+q")
-keyboard.add_hotkey(gemini_hotkey, lambda: app.after(0, run_gemini_pipeline), suppress=True)
-
-# Register Error Fix hotkey
-keyboard.add_hotkey("ctrl+shift+e", lambda: app.after(0, run_gemini_error_pipeline), suppress=True)
+if not IS_MAC:
+    keyboard.add_hotkey("ctrl+q", lambda: app.after(0, on_ctrl_q), suppress=True)
+    config_data = load_config()
+    gemini_hotkey = config_data.get("hotkey", "ctrl+shift+q")
+    keyboard.add_hotkey(gemini_hotkey, lambda: app.after(0, run_gemini_pipeline), suppress=True)
+    keyboard.add_hotkey("ctrl+shift+e", lambda: app.after(0, run_gemini_error_pipeline), suppress=True)
+else:
+    app._hotkey_pressed = False
+    app._ai_hotkey_pressed = False
+    app._ai_error_hotkey_pressed = False
+    
+    def poll_hotkey():
+        try:
+            ctrl = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 59)
+            ctrl2 = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 62)
+            cmd = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 55)
+            cmd2 = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 54)
+            shift = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 56)
+            shift2 = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 60)
+            q = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 12)
+            e_key = Quartz.CGEventSourceKeyState(Quartz.kCGEventSourceStateHIDSystemState, 14)
+            
+            is_mod = (ctrl or ctrl2 or cmd or cmd2)
+            is_shift = (shift or shift2)
+            
+            if is_mod and is_shift and q:
+                if not app._ai_hotkey_pressed:
+                    app._ai_hotkey_pressed = True
+                    run_gemini_pipeline()
+            elif is_mod and is_shift and e_key:
+                if not app._ai_error_hotkey_pressed:
+                    app._ai_error_hotkey_pressed = True
+                    run_gemini_error_pipeline()
+            elif is_mod and not is_shift and q:
+                if not app._hotkey_pressed and not app._ai_hotkey_pressed:
+                    app._hotkey_pressed = True
+                    app.after(150, lambda: on_ctrl_q() if (not app._ai_hotkey_pressed and app._hotkey_pressed) else None)
+            else:
+                if not (is_mod or q or e_key):
+                    app._hotkey_pressed = False
+                    app._ai_hotkey_pressed = False
+                    app._ai_error_hotkey_pressed = False
+        except Exception:
+            pass
+        app.after(50, poll_hotkey)
+    
+    if 'Quartz' in globals():
+        app.after(50, poll_hotkey)
 
 if __name__ == "__main__":
     app.mainloop()
