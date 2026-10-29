@@ -13,12 +13,11 @@ from PIL import Image
 PROMPT = """You are an expert programming assistant evaluating a screenshot for a competitive programming platform.
 
 CRITICAL INSTRUCTIONS - YOU MUST OBEY THESE OR THE SYSTEM WILL FAIL:
-1. Output ONLY the raw, executable code. ABSOLUTELY NO EXPLANATIONS, NO PROBLEM SUMMARY, NO INTRODUCTORY TEXT (e.g., "Here is the code"), and NO CONCLUDING TEXT.
-2. DO NOT use markdown code blocks (e.g., do not use ```c or ```python). Just output the plain text code.
+1. You MUST wrap your final executable code inside a markdown code block (e.g., ```c ... ``` or ```python ... ```). 
+2. You may think step-by-step and write explanations OUTSIDE the code block, but the code block itself must contain ONLY raw, executable code.
 3. DO NOT output ANY code comments (no //, /* */, or #) anywhere in your response.
 4. Identify the active programming language from the screenshot and write the solution in THAT language exactly. If no language is specified, default to ANSI C.
-5. ALL code must be written WITHOUT ANY INDENTATION AT ALL. Every single line of code must start exactly at column 0. Do not use any spaces or tabs for indentation.
-6. If the problem asks you to "fill the function", provide ONLY that requested function.
+5. If the problem asks you to "fill the function", provide ONLY that requested function.
 
 YOUR OUTPUT MUST BE 100% EXECUTABLE CODE WITH ZERO EXTRA CHARACTERS AND ZERO COMMENTS."""
 
@@ -26,13 +25,12 @@ ERROR_PROMPT = """You are an expert programming assistant evaluating a screensho
 You are also provided with the PREVIOUS CODE that was executed.
 
 CRITICAL INSTRUCTIONS - YOU MUST OBEY THESE OR THE SYSTEM WILL FAIL:
-1. Output ONLY the raw, executable FIXED code. ABSOLUTELY NO EXPLANATIONS, NO PROBLEM SUMMARY, NO INTRODUCTORY TEXT (e.g., "Here is the code"), and NO CONCLUDING TEXT.
-2. DO NOT use markdown code blocks (e.g., do not use ```c or ```python). Just output the plain text code.
+1. You MUST wrap your final executable code inside a markdown code block (e.g., ```c ... ``` or ```python ... ```). 
+2. You may think step-by-step and write explanations OUTSIDE the code block, but the code block itself must contain ONLY raw, executable code.
 3. DO NOT output ANY code comments (no //, /* */, or #) anywhere in your response.
 4. You MUST retain the exact same programming language as the PREVIOUS CODE provided. Even if the screenshot implies something else or looks like Python, if previous code is C, output C.
 5. Pay EXTREMELY close attention to the Expected Output vs Your Program Output strings. If cases differ (like 'Iannehc' vs 'iannehC'), adjust your logic to match the Expected Output exactly.
-6. ALL code must be written WITHOUT ANY INDENTATION AT ALL. Every single line of code must start exactly at column 0. Do not use any spaces or tabs for indentation.
-7. If the problem asks you to "fill the function", provide ONLY that requested function.
+6. If the problem asks you to "fill the function", provide ONLY that requested function.
 
 YOUR OUTPUT MUST BE 100% EXECUTABLE CODE WITH ZERO EXTRA CHARACTERS AND ZERO COMMENTS."""
 
@@ -45,7 +43,7 @@ def _handle_api_error(e: Exception):
                 "Daily quota exhausted for this API key.\n\n"
                 "Please:\n"
                 "1. Get a new API key from a DIFFERENT Google account.\n"
-                "2. Paste it into config.json under \"api_key\""
+                "2. Click the ⚙️ Settings button to save it."
             ) from e
         raise RuntimeError("Rate limit hit. Please wait a minute and try again.") from e
     raise e
@@ -70,8 +68,9 @@ def get_solution(
 
         response = client.models.generate_content(
             model=model_name,
-            contents=[PROMPT, image],
+            contents=[image],
             config=types.GenerateContentConfig(
+                system_instruction=PROMPT,
                 temperature=0.2,
                 max_output_tokens=8192,
             )
@@ -107,12 +106,13 @@ def get_fixed_solution(
         if progress_callback:
             progress_callback(f"Querying Gemini for Fix ({model_name})...")
         
-        prompt_content = f"{ERROR_PROMPT}\n\nPREVIOUS CODE:\n{previous_code}"
+        prompt_content = f"PREVIOUS CODE:\n{previous_code}"
 
         response = client.models.generate_content(
             model=model_name,
             contents=[prompt_content, image],
             config=types.GenerateContentConfig(
+                system_instruction=ERROR_PROMPT,
                 temperature=0.2,
                 max_output_tokens=8192,
             )

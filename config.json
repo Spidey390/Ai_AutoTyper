@@ -1,7 +1,7 @@
 {
-    "api_key": "AIzaSyDEYMhWj6CMKhEQfa-GV3B1Y9Sw2KXh35I",
+    "api_key": "AIzaSyCj-8phwaVYuxHGRO6UtX0kWiYnAHIj-fI",
     "hotkey": "ctrl+shift+q",
-    "model": "gemini-2.5-pro",
+    "model": "gemini-flash-latest",
     "overlay_width": 700,
     "overlay_height": 500,
     "overlay_position": "right"

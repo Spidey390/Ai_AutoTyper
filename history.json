@@ -1,0 +1,12 @@
+[
+  {
+    "kind": "Generated solution",
+    "created_at": "15 Jul 2026, 00:42",
+    "code": "#include <stdio.h>\nint main()\n{\nint maths,chemistry;\nscanf(\"%d\",&maths);\nscanf(\"%d\",&chemistry);\nif(maths >= 50 && chemistry >= 40 && (maths + chemistry) >= 100)\n{\nprintf(\"pass\");\n}\nelse\n{\nprintf(\"fail\");\n}\nreturn 0;\n}"
+  },
+  {
+    "kind": "Generated solution",
+    "created_at": "15 Jul 2026, 00:42",
+    "code": "#include <stdio.h>\nint main(void){\nreturn 0;\n}"
+  }
+]

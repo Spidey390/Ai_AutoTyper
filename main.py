@@ -11,16 +11,18 @@ import customtkinter as ctk
 
 try:
     import pyautogui
-    import keyboard
+    import pyperclip
+    from pynput import keyboard
 except ImportError:
     import subprocess
-    subprocess.run([sys.executable, "-m", "pip", "install", "pyautogui", "keyboard", "customtkinter", "mss", "pillow", "google-generativeai", "--break-system-packages"],
+    subprocess.run([sys.executable, "-m", "pip", "install", "pyautogui", "pyperclip", "pynput", "customtkinter", "mss", "pillow", "google-genai", "--break-system-packages"],
                    capture_output=True)
     import pyautogui
-    import keyboard
+    import pyperclip
+    from pynput import keyboard
 
 from PIL import Image
-from screenshot import capture_screen_base64
+from screenshot import capture_screen_image
 from gemini_client import get_solution, get_fixed_solution
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -31,6 +33,10 @@ def load_config() -> dict:
         return {}
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
+
+def save_config(config_dict: dict):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config_dict, f, indent=4)
 
 # ── PyAutoGUI Settings ──
 pyautogui.FAILSAFE = True
@@ -51,6 +57,7 @@ typing_active = False
 typing_thread = None
 processing_gemini = False
 last_generated_code = ""
+HOTKEY_DISAMBIGUATION_MS = 150
 
 # ── Animated Toast ──
 class AnimatedToast(ctk.CTkFrame):
@@ -94,31 +101,74 @@ def human_delay(wpm):
     jitter  = random.gauss(0, base_delay * 0.15)
     return max(0.001, base_delay + jitter)
 
+SHIFTED_CHARS = {
+    '~': '`', '!': '1', '@': '2', '#': '3', '$': '4', '%': '5',
+    '^': '6', '&': '7', '*': '8', '(': '9', ')': '0', '_': '-',
+    '+': '=', '{': '[', '}': ']', '|': '\\', ':': ';', '"': "'",
+    '<': ',', '>': '.', '?': '/'
+}
+
+def safe_type(ch):
+    if ch.isupper():
+        pyautogui.keyDown('shift')
+        time.sleep(0.005)
+        pyautogui.keyDown(ch.lower())
+        time.sleep(0.005)
+        pyautogui.keyUp(ch.lower())
+        time.sleep(0.005)
+        pyautogui.keyUp('shift')
+    elif ch in SHIFTED_CHARS:
+        pyautogui.keyDown('shift')
+        time.sleep(0.005)
+        pyautogui.keyDown(SHIFTED_CHARS[ch])
+        time.sleep(0.005)
+        pyautogui.keyUp(SHIFTED_CHARS[ch])
+        time.sleep(0.005)
+        pyautogui.keyUp('shift')
+    else:
+        if ord(ch) < 128:
+            pyautogui.write(ch, interval=0)
+        else:
+            try:
+                cb = pyperclip.paste()
+                pyperclip.copy(ch)
+                pyautogui.hotkey("command" if sys.platform == "darwin" else "ctrl", "v")
+                time.sleep(0.06)
+                pyperclip.copy(cb)
+            except:
+                pyautogui.write(ch, interval=0)
+
 def type_code(text, target_wpm):
     global typing_active
-    # Added 3-second safety delay
     time.sleep(3)
     
-    chars = list(text)
-    total = len(chars)
-    for i, ch in enumerate(chars):
-        if not typing_active:
-            break
-        delay = human_delay(target_wpm)
+    try:
+        for ch in text:
+            if not typing_active:
+                break
+            delay = human_delay(target_wpm)
 
-        if ch == '\n':
-            pyautogui.press('enter')
-        elif ch == '\t':
-            pyautogui.press('tab')
-        else:
-            pyautogui.write(ch, interval=0)
-        time.sleep(delay)
-    typing_active = False
-    app.after(0, lambda: update_ui_state("✅ Done typing!", SUCCESS, False))
+            if ch == '\n':
+                pyautogui.press('enter')
+            elif ch == '\t':
+                pyautogui.press('tab')
+            else:
+                safe_type(ch)
+            time.sleep(delay)
+    except Exception as e:
+        print(f"Typing error: {e}")
+    finally:
+        typing_active = False
+        app.after(0, lambda: update_ui_state("✅ Done typing!", SUCCESS, False))
 
 # ── Hotkey handlers ──
 def on_ctrl_q():
     global typing_active, typing_thread
+    # Ctrl+Q is a subset of the default Gemini shortcut Ctrl+Shift+Q on some
+    # platforms.  Do not let the typing action start while a Gemini request is
+    # being launched for that same key press.
+    if processing_gemini:
+        return
     if typing_active:
         typing_active = False
         app.after(0, lambda: update_ui_state("⛔ Stopped.", WARNING, False))
@@ -163,7 +213,7 @@ toast = AnimatedToast(app)
 # ── Sidebar ──
 sidebar = ctk.CTkFrame(app, width=280, corner_radius=0, fg_color=PANEL_COLOR)
 sidebar.grid(row=0, column=0, sticky="nsew")
-sidebar.grid_rowconfigure(5, weight=1)
+sidebar.grid_rowconfigure(8, weight=1)
 
 ctk.CTkLabel(sidebar, text="⚡ AutoTyper Pro",
              font=("Segoe UI", 20, "bold"), text_color="white").grid(
@@ -200,6 +250,54 @@ stop_btn = ctk.CTkButton(sidebar, text="⏹ Stop",
                          font=("Segoe UI", 14, "bold"), fg_color=PANEL_COLOR,
                          hover_color="#B91C1C", height=45, state="disabled")
 stop_btn.grid(row=5, column=0, padx=20, pady=0, sticky="ew")
+
+fix_error_btn = ctk.CTkButton(
+    sidebar, text="🛠 Fix Error (Ctrl+Shift+E)",
+    command=lambda: run_gemini_error_pipeline(),
+    font=("Segoe UI", 14, "bold"), fg_color="#7C3AED",
+    hover_color="#6D28D9", height=45
+)
+fix_error_btn.grid(row=6, column=0, padx=20, pady=(10, 0), sticky="ew")
+
+def open_settings():
+    settings_win = ctk.CTkToplevel(app)
+    settings_win.title("Settings")
+    settings_win.geometry("400x380")
+    settings_win.attributes("-topmost", True)
+    
+    current_config = load_config()
+    
+    ctk.CTkLabel(settings_win, text="Gemini API Key:", font=("Segoe UI", 14)).pack(pady=(20, 5), padx=20, anchor="w")
+    api_entry = ctk.CTkEntry(settings_win, width=360, show="*")
+    api_entry.pack(pady=5, padx=20)
+    api_entry.insert(0, current_config.get("api_key", ""))
+    
+    ctk.CTkLabel(settings_win, text="Model:", font=("Segoe UI", 14)).pack(pady=(10, 5), padx=20, anchor="w")
+    model_var = ctk.StringVar(value=current_config.get("model", "gemini-flash-latest"))
+    model_dropdown = ctk.CTkOptionMenu(settings_win, variable=model_var, width=360,
+                                       values=["gemini-flash-latest", "gemini-pro-latest", "gemini-3.5-flash", "gemini-2.0-flash"])
+    model_dropdown.pack(pady=5, padx=20)
+    
+    ctk.CTkLabel(settings_win, text="Gemini Trigger Hotkey:", font=("Segoe UI", 14)).pack(pady=(10, 5), padx=20, anchor="w")
+    hotkey_entry = ctk.CTkEntry(settings_win, width=360)
+    hotkey_entry.pack(pady=5, padx=20)
+    hotkey_entry.insert(0, current_config.get("hotkey", "ctrl+shift+q"))
+    
+    def save_and_close():
+        current_config["api_key"] = api_entry.get().strip()
+        current_config["model"] = model_var.get().strip()
+        current_config["hotkey"] = hotkey_entry.get().strip()
+        save_config(current_config)
+        settings_win.destroy()
+        toast.show("✅ Saved! Restart app if hotkey changed.", SUCCESS)
+        app.after(4000, toast.hide)
+        
+    ctk.CTkButton(settings_win, text="Save", command=save_and_close, fg_color=ACCENT, hover_color="#2563EB").pack(pady=20)
+
+settings_btn = ctk.CTkButton(sidebar, text="⚙️ Settings", command=open_settings,
+                             font=("Segoe UI", 14, "bold"), fg_color="#1E293B",
+                             hover_color="#334155", height=45)
+settings_btn.grid(row=7, column=0, padx=20, pady=(10, 20), sticky="ew")
 
 def remove_indentation():
     text = code_box.get("1.0", ctk.END)
@@ -280,14 +378,18 @@ code_box._textbox.bind("<FocusOut>", _placeholder_restore)
 
 # ── GEMINI INTEGRATION & AUTOMATION PIPELINE ──
 def clean_markdown_code(text):
-    """Clean markdown code block wrappers (```c, etc.) if generation included them."""
-    code = text.strip()
-    if code.startswith("```"):
-        # Remove first line containing backticks
-        code = re.sub(r"^```[a-zA-Z]*\n", "", code)
-        # Remove trailing backticks
-        code = re.sub(r"\n```$", "", code)
-    return code.strip()
+    """Extract code from markdown blocks, ignoring any conversational text or CoT reasoning."""
+    # Find all blocks wrapped in ```, capturing the language tag
+    blocks = re.findall(r"```([^\n]*)\n(.*?)```", text, re.DOTALL)
+    if blocks:
+        # Return the longest code block and its language
+        longest_block = max(blocks, key=lambda b: len(b[1]))
+        lang = longest_block[0].lower().strip()
+        code = longest_block[1].strip()
+        return code, lang
+    
+    # Fallback if it didn't use markdown blocks
+    return text.strip(), ""
 
 def run_gemini_pipeline():
     global processing_gemini
@@ -296,16 +398,23 @@ def run_gemini_pipeline():
         return
     processing_gemini = True
     app.after(0, lambda: toast.show("📸 Capturing screenshot...", ACCENT))
+    
+    def clear_editor_for_loading():
+        _placeholder_clear()
+        code_box.delete("1.0", ctk.END)
+        code_box.insert("1.0", "⏳ Waiting for Gemini to generate solution...\n(This usually takes 2-5 seconds)")
+        code_box.configure(text_color=TEXT_MUTED)
+    app.after(0, clear_editor_for_loading)
 
     def task():
         global processing_gemini
         try:
             # 1. Capture screen
-            b64_img, pil_img = capture_screen_base64()
+            full_img, thumbnail_img = capture_screen_image()
 
             config_data = load_config()
             api_key = config_data.get("api_key", "")
-            model = config_data.get("model", "gemini-2.5-flash")
+            model = config_data.get("model", "gemini-flash-latest")
 
             if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
                 raise ValueError("API Key missing in config.json")
@@ -314,31 +423,39 @@ def run_gemini_pipeline():
             def progress(msg):
                 app.after(0, lambda: toast.show(f"🤖 {msg}", ACCENT))
 
-            solution = get_solution(api_key, model, pil_img, progress_callback=progress)
-            cleaned_code = clean_markdown_code(solution)
+            solution = get_solution(api_key, model, full_img, progress_callback=progress)
+            cleaned_code, lang = clean_markdown_code(solution)
 
             global last_generated_code
             last_generated_code = cleaned_code
 
             # 3. Inject, dedent, and trigger typing via UI thread
-            app.after(0, lambda: execute_gemini_result(cleaned_code))
+            app.after(0, lambda: execute_gemini_result(cleaned_code, lang))
 
         except Exception as e:
-            app.after(0, lambda: toast.show(f"❌ Error: {str(e)}", DANGER))
+            err_msg = str(e)
+            app.after(0, lambda msg=err_msg: toast.show(f"❌ Error: {msg}", DANGER))
             processing_gemini = False
+            
+            def restore_on_error():
+                code_box.delete("1.0", ctk.END)
+                _placeholder_restore()
+            app.after(0, restore_on_error)
 
     threading.Thread(target=task, daemon=True).start()
 
-def execute_gemini_result(code):
+def execute_gemini_result(code, lang=""):
     global processing_gemini
     try:
         # Step A: Paste code into the editor
         _placeholder_clear()
         code_box.delete("1.0", ctk.END)
         code_box.insert("1.0", code)
+        code_box.configure(text_color=CODE_COLOR)
         
-        # Step B: Remove indentation
-        remove_indentation()
+        # Step B: Remove indentation for everything EXCEPT Python
+        if lang not in ["python", "py", "python3"]:
+            remove_indentation()
         
         # Step C: Delay briefly to let the user focus and UI update, then trigger typing natively
         app.after(800, on_ctrl_q)
@@ -357,14 +474,21 @@ def run_gemini_error_pipeline():
     processing_gemini = True
     app.after(0, lambda: toast.show("📸 Capturing error screenshot...", ACCENT))
 
+    def clear_editor_for_loading():
+        _placeholder_clear()
+        code_box.delete("1.0", ctk.END)
+        code_box.insert("1.0", "⏳ Waiting for Gemini to analyze and fix the error...\n(This usually takes 2-5 seconds)")
+        code_box.configure(text_color=TEXT_MUTED)
+    app.after(0, clear_editor_for_loading)
+
     def task():
         global processing_gemini, last_generated_code
         try:
-            b64_img, pil_img = capture_screen_base64()
+            full_img, thumbnail_img = capture_screen_image()
 
             config_data = load_config()
             api_key = config_data.get("api_key", "")
-            model = config_data.get("model", "gemini-2.5-flash")
+            model = config_data.get("model", "gemini-flash-latest")
 
             if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
                 raise ValueError("API Key missing in config.json")
@@ -372,30 +496,60 @@ def run_gemini_error_pipeline():
             def progress(msg):
                 app.after(0, lambda: toast.show(f"🤖 {msg}", ACCENT))
 
-            solution = get_fixed_solution(api_key, model, pil_img, last_generated_code, progress_callback=progress)
-            cleaned_code = clean_markdown_code(solution)
+            solution = get_fixed_solution(api_key, model, full_img, last_generated_code, progress_callback=progress)
+            cleaned_code, lang = clean_markdown_code(solution)
             
             last_generated_code = cleaned_code
 
-            app.after(0, lambda: execute_gemini_result(cleaned_code))
+            app.after(0, lambda: execute_gemini_result(cleaned_code, lang))
 
         except Exception as e:
-            app.after(0, lambda: toast.show(f"❌ Error: {str(e)}", DANGER))
+            err_msg = str(e)
+            app.after(0, lambda msg=err_msg: toast.show(f"❌ Error: {msg}", DANGER))
             processing_gemini = False
+            
+            def restore_on_error():
+                code_box.delete("1.0", ctk.END)
+                _placeholder_restore()
+            app.after(0, restore_on_error)
 
     threading.Thread(target=task, daemon=True).start()
 
 
 # ── Global hotkeys ──
-keyboard.add_hotkey("ctrl+q", lambda: app.after(0, on_ctrl_q), suppress=True)
+def dispatch_typing_hotkey():
+    """Delay Ctrl+Q briefly so a longer Gemini chord can take precedence."""
+    app.after(HOTKEY_DISAMBIGUATION_MS, on_ctrl_q)
 
-# Register the Gemini hotkey based on config (defaults to your preference, e.g., ctrl+shift+q)
+
+def parse_hotkey(hk):
+    parts = hk.split('+')
+    pynput_parts = []
+    for p in parts:
+        p = p.strip().lower()
+        if p in ['ctrl', 'shift', 'alt', 'cmd', 'command', 'option']:
+            if p in ['cmd', 'command']: p = 'cmd'
+            if p in ['alt', 'option']: p = 'alt'
+            pynput_parts.append(f"<{p}>")
+        else:
+            pynput_parts.append(p)
+    return "+".join(pynput_parts)
+
 config_data = load_config()
-gemini_hotkey = config_data.get("hotkey", "ctrl+shift+q")
-keyboard.add_hotkey(gemini_hotkey, lambda: app.after(0, run_gemini_pipeline), suppress=True)
+gemini_hotkey = config_data.get("hotkey", "")
+if not gemini_hotkey.strip():
+    gemini_hotkey = "ctrl+shift+q"
 
-# Register Error Fix hotkey
-keyboard.add_hotkey("ctrl+shift+e", lambda: app.after(0, run_gemini_error_pipeline), suppress=True)
+hotkeys = {}
+try:
+    hotkeys[parse_hotkey("ctrl+q")] = dispatch_typing_hotkey
+    hotkeys[parse_hotkey(gemini_hotkey)] = lambda: app.after(0, run_gemini_pipeline)
+    hotkeys[parse_hotkey("ctrl+shift+e")] = lambda: app.after(0, run_gemini_error_pipeline)
+except ValueError as e:
+    print(f"Warning: Invalid hotkey format! {e}")
+
+listener = keyboard.GlobalHotKeys(hotkeys)
+listener.start()
 
 if __name__ == "__main__":
     app.mainloop()
